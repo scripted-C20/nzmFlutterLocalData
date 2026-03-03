@@ -1,0 +1,2294 @@
+import "dart:convert";
+
+import "package:flutter/material.dart";
+import "package:flutter/services.dart";
+import "package:flutter_markdown/flutter_markdown.dart";
+import "package:http/http.dart" as http;
+
+import "controllers/app_controller.dart";
+import "models/account_binding.dart";
+import "models/dashboard_models.dart";
+import "models/qiniu_config.dart";
+import "services/api_log_service.dart";
+import "ui/nzm_theme.dart";
+import "ui/nzm_widgets.dart";
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const NzmFlutterApp());
+}
+
+class NzmFlutterApp extends StatelessWidget {
+  const NzmFlutterApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: "NZM鏁版嵁缁熻",
+      theme: NzmTheme.build(),
+      home: const NzmHomePage(),
+    );
+  }
+}
+
+class NzmHomePage extends StatefulWidget {
+  const NzmHomePage({super.key});
+
+  @override
+  State<NzmHomePage> createState() => _NzmHomePageState();
+}
+
+class _NzmHomePageState extends State<NzmHomePage> {
+  late final AppController _controller;
+  static const String _noticeUrl =
+      "https://gitee.com/returnee/nzm-notice/raw/master/Flutter_README.md";
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AppController()..init();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<String> _loadNoticeMarkdown() async {
+    final Uri uri = Uri.parse(_noticeUrl);
+    final http.Response response = await http.get(
+      uri,
+      headers: const <String, String>{
+        "Accept": "text/markdown,text/plain,*/*",
+      },
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception("公告拉取失败（HTTP ${response.statusCode}）");
+    }
+    if (response.bodyBytes.isEmpty) {
+      throw Exception("鍏憡鍐呭涓虹┖");
+    }
+    return utf8.decode(response.bodyBytes, allowMalformed: true);
+  }
+
+  Future<void> _openNoticeDialog() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text("鍏憡"),
+          content: SizedBox(
+            width: 680,
+            height: MediaQuery.of(dialogContext).size.height * 0.66,
+            child: FutureBuilder<String>(
+              future: _loadNoticeMarkdown(),
+              builder: (BuildContext context, AsyncSnapshot<String> snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return SingleChildScrollView(
+                    child: Text(
+                      "鍏憡鍔犺浇澶辫触锛?{snapshot.error}",
+                      style: const TextStyle(color: NzmTheme.red),
+                    ),
+                  );
+                }
+                final String markdownText = snapshot.data ?? "";
+                return Scrollbar(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: MarkdownBody(
+                      data: markdownText,
+                      selectable: true,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text("鍏抽棴"),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (BuildContext context, _) {
+        return NzmBackground(
+          child: Scaffold(
+            appBar: AppBar(
+              title: const Text("NZM 鏁版嵁缁熻"),
+              actions: <Widget>[
+                IconButton(
+                  tooltip: "鍏憡",
+                  onPressed: _openNoticeDialog,
+                  icon: const Icon(Icons.campaign_outlined),
+                ),
+                IconButton(
+                  tooltip: "鍒锋柊鏁版嵁",
+                  onPressed: _controller.isLoading
+                      ? null
+                      : () => _controller.refreshAllData(showLoading: true),
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            body: Column(
+              children: <Widget>[
+                NzmStatusBar(
+                  message: _controller.statusMessage,
+                  showLoading: _controller.isRefreshingData,
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: _buildTabBody(),
+                  ),
+                ),
+                if (_controller.isLoading && !_controller.isRefreshingData)
+                  const LinearProgressIndicator(minHeight: 2),
+              ],
+            ),
+            bottomNavigationBar: NavigationBar(
+              selectedIndex: _controller.rootTab.index,
+              onDestinationSelected: (int index) {
+                _controller.setRootTab(RootTab.values[index]);
+              },
+              destinations: const <NavigationDestination>[
+                NavigationDestination(
+                  icon: Icon(Icons.analytics_outlined),
+                  selectedIcon: Icon(Icons.analytics),
+                  label: "鏁版嵁缁熻",
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.history_toggle_off),
+                  selectedIcon: Icon(Icons.history),
+                  label: "鍘嗗彶鎴樼哗",
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.folder_copy_outlined),
+                  selectedIcon: Icon(Icons.folder_copy),
+                  label: "鏈湴鎴樼哗",
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.person_outline),
+                  selectedIcon: Icon(Icons.person),
+                  label: "璐﹀彿绠＄悊",
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTabBody() {
+    switch (_controller.rootTab) {
+      case RootTab.stats:
+        return StatsTab(controller: _controller);
+      case RootTab.history:
+        return HistoryTab(controller: _controller);
+      case RootTab.local:
+        return LocalTab(controller: _controller);
+      case RootTab.profile:
+        return ProfileTab(controller: _controller);
+      case RootTab.logs:
+        return const LogTab();
+    }
+  }
+}
+
+class StatsTab extends StatelessWidget {
+  const StatsTab({required this.controller, super.key});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      children: <Widget>[
+        NzmPanelCard(
+          child: SegmentedButton<StatsSubTab>(
+            segments: const <ButtonSegment<StatsSubTab>>[
+              ButtonSegment<StatsSubTab>(
+                value: StatsSubTab.stats,
+                label: Text("鏁版嵁缁熻"),
+                icon: Icon(Icons.query_stats),
+              ),
+              ButtonSegment<StatsSubTab>(
+                value: StatsSubTab.collection,
+                label: Text("鏀惰棌鍥鹃壌"),
+                icon: Icon(Icons.menu_book),
+              ),
+            ],
+            selected: <StatsSubTab>{controller.statsSubTab},
+            onSelectionChanged: (Set<StatsSubTab> selected) {
+              if (selected.isEmpty) return;
+              controller.setStatsSubTab(selected.first);
+            },
+          ),
+        ),
+        if (controller.statsSubTab == StatsSubTab.stats)
+          _StatsPanel(data: controller.statsData)
+        else
+          _CollectionPanel(data: controller.collectionData),
+      ],
+    );
+  }
+}
+
+class _StatsPanel extends StatelessWidget {
+  const _StatsPanel({required this.data});
+
+  final StatsData data;
+
+  @override
+  Widget build(BuildContext context) {
+    // Keep the same mapping as Electron renderStatsCards.
+    final int zombieTotal = data.overview.totalGames;
+    final int towerTotal = data.overview.winRate.toInt();
+    final int mechaTotal = data.overview.avgScore;
+    final int timehuntTotal = data.overview.totalDamage;
+    final int onlineHours = data.overview.totalWin;
+    final int recentGames =
+        data.overview.recentGames ?? data.overview.totalLoss;
+
+    final List<ModeStatsEntry> recentModeList =
+        data.modeStats.where((ModeStatsEntry e) {
+      final String modeName = _safeString(() => e.modeName);
+      return !modeName.contains("鎺掍綅") && !modeName.contains("娈典綅");
+    }).toList();
+    return Column(
+      children: <Widget>[
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("姝﹀櫒纰庣墖"),
+              if (data.fragments.isEmpty) const Text("鏆傛棤姝﹀櫒纰庣墖鏁版嵁"),
+              LayoutBuilder(
+                builder: (BuildContext context, BoxConstraints constraints) {
+                  final double cardWidth =
+                      _twoColumnCardWidth(constraints.maxWidth);
+                  return Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: data.fragments.take(12).map((FragmentProgress e) {
+                      final int current = _safeInt(() => e.current);
+                      final int targetRaw = _safeInt(() => e.target);
+                      final int target = targetRaw <= 0 ? 1 : targetRaw;
+                      final double progress = _safeDouble(() => e.progress);
+                      final String iconUrl = _safeString(() => e.iconUrl);
+                      final bool hasBg = iconUrl.isNotEmpty;
+                      return SizedBox(
+                        width: cardWidth,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: hasBg ? null : const Color(0xAA132843),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: NzmTheme.line),
+                            image: hasBg
+                                ? DecorationImage(
+                                    image: NetworkImage(iconUrl),
+                                    fit: BoxFit.cover,
+                                    onError: (Object _, StackTrace? __) {},
+                                  )
+                                : null,
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              gradient: const LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: <Color>[
+                                  Color(0x22000000),
+                                  Color(0xCC020812)
+                                ],
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(
+                                  _safeString(() => e.name, "未命名"),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: NzmTheme.text,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  "${nzmFormatNumber(current)}/${nzmFormatNumber(target)}",
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    color: NzmTheme.text,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(99),
+                                  child: LinearProgressIndicator(
+                                    minHeight: 6,
+                                    value: progress.clamp(0, 1),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("瀹樻柟鍘嗗彶鏁版嵁"),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: <Widget>[
+                  NzmMetricCard(
+                    label: "总场次",
+                    value: nzmFormatNumber(zombieTotal),
+                    width: 160,
+                    glass: true,
+                  ),
+                  NzmMetricCard(
+                    label: "鎬昏儨鐜?%)",
+                    value: nzmFormatNumber(towerTotal),
+                    width: 160,
+                    glass: true,
+                  ),
+                  NzmMetricCard(
+                    label: "骞冲潎绉垎",
+                    value: nzmFormatNumber(mechaTotal),
+                    width: 160,
+                    glass: true,
+                  ),
+                  NzmMetricCard(
+                    label: "总伤害",
+                    value: nzmFormatNumber(timehuntTotal),
+                    width: 160,
+                    glass: true,
+                  ),
+                  NzmMetricCard(
+                    label: "鍦ㄧ嚎鏃堕暱",
+                    value: nzmFormatNumber(onlineHours),
+                    width: 160,
+                    glass: true,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("杩戞湡鎴樼哗缁熻"),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: <Widget>[
+                  NzmMetricCard(
+                    label: "杩戞湡鍦烘",
+                    value: nzmFormatNumber(recentGames),
+                    width: 160,
+                    glass: true,
+                  ),
+                  NzmMetricCard(
+                    label: "杩戞湡鑳滅巼",
+                    value:
+                        "${(data.overview.recentWinRate ?? 0).toStringAsFixed(1)}%",
+                    width: 160,
+                    glass: true,
+                  ),
+                  NzmMetricCard(
+                    label: "杩戞湡鍦哄潎绉垎",
+                    value: nzmFormatNumber(data.overview.recentAvgScore ?? 0),
+                    width: 160,
+                    glass: true,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("杩戞湡妯″紡缁熻锛堜笉鍚帓浣嶏級"),
+              if (recentModeList.isEmpty) const Text("鏆傛棤杩戞湡妯″紡缁熻"),
+              LayoutBuilder(
+                builder: (BuildContext context, BoxConstraints constraints) {
+                  final double cardWidth =
+                      _twoColumnCardWidth(constraints.maxWidth);
+                  return Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: recentModeList.map((ModeStatsEntry e) {
+                      final String modeName =
+                          _safeString(() => e.modeName, "鏈煡妯″紡");
+                      final int games = _safeInt(() => e.games);
+                      final int wins = _safeInt(() => e.wins);
+                      final double winRate = games > 0 ? wins * 100 / games : 0;
+                      return SizedBox(
+                        width: cardWidth,
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xAA132843),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: NzmTheme.line),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                modeName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                "${nzmFormatNumber(wins)}/${nzmFormatNumber(games)} - ${winRate.toStringAsFixed(1)}%",
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: NzmTheme.muted,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                "鑳滅巼锛?{winRate.toStringAsFixed(1)}%",
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("杩戞湡鍦板浘璇︽儏锛堣繎30澶?100鍦猴級"),
+              if (data.mapStats.isEmpty) const Text("鏆傛棤鏁版嵁"),
+              LayoutBuilder(
+                builder: (BuildContext context, BoxConstraints constraints) {
+                  return _buildEqualHeightTwoColumnRows<MapStatsEntry>(
+                    items: data.mapStats.take(6).toList(),
+                    spacing: 10,
+                    itemBuilder: (MapStatsEntry e) {
+                      final String mapName =
+                          _safeString(() => e.mapName, "鏈煡鍦板浘");
+                      final String iconUrl = _safeString(() => e.iconUrl);
+                      final int games = _safeInt(() => e.games);
+                      final double winRate = _safeDouble(() => e.winRate);
+                      final bool hasBg = iconUrl.isNotEmpty;
+                      return Container(
+                        width: constraints.maxWidth,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: NzmTheme.line),
+                          image: hasBg
+                              ? DecorationImage(
+                                  image: NetworkImage(iconUrl),
+                                  fit: BoxFit.cover,
+                                  onError: (Object _, StackTrace? __) {},
+                                )
+                              : null,
+                          color: hasBg ? null : const Color(0xAA132843),
+                        ),
+                        child: Container(
+                          height: double.infinity,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            gradient: const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: <Color>[
+                                Color(0x22000000),
+                                Color(0xCC020812)
+                              ],
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                mapName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                "${nzmFormatNumber(games)} 鍦?- ${winRate.toStringAsFixed(1)}% 鑳滅巼",
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                              ...e.difficulties
+                                  .take(3)
+                                  .map((MapDifficultyEntry d) {
+                                final String diffName =
+                                    _safeString(() => d.diffName, "鏈煡闅惧害");
+                                final int diffGames = _safeInt(() => d.games);
+                                final double diffWinRate =
+                                    _safeDouble(() => d.winRate);
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 3),
+                                  child: Text(
+                                    "$diffName锛?{nzmFormatNumber(diffGames)} 鍦?(${diffWinRate.toStringAsFixed(1)}%)",
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: NzmTheme.muted,
+                                    ),
+                                  ),
+                                );
+                              }),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  double _twoColumnCardWidth(double maxWidth, {double spacing = 10}) {
+    final double width = (maxWidth - spacing) / 2;
+    if (width < 140) {
+      return maxWidth;
+    }
+    return width;
+  }
+
+  Widget _buildEqualHeightTwoColumnRows<T>({
+    required List<T> items,
+    required Widget Function(T item) itemBuilder,
+    double spacing = 10,
+  }) {
+    final List<Widget> rows = <Widget>[];
+    for (int i = 0; i < items.length; i += 2) {
+      final T first = items[i];
+      final T? second = i + 1 < items.length ? items[i + 1] : null;
+      rows.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: i + 2 < items.length ? spacing : 0),
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Expanded(child: itemBuilder(first)),
+                SizedBox(width: spacing),
+                Expanded(
+                  child: second == null
+                      ? const SizedBox.shrink()
+                      : itemBuilder(second),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    return Column(children: rows);
+  }
+
+  String _safeString(String Function() getter, [String fallback = ""]) {
+    try {
+      final String value = getter();
+      final String text = value.trim();
+      if (text.isEmpty || text.toLowerCase() == "null") {
+        return fallback;
+      }
+      return text;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  int _safeInt(int Function() getter, [int fallback = 0]) {
+    try {
+      return getter();
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  double _safeDouble(double Function() getter, [double fallback = 0]) {
+    try {
+      return getter();
+    } catch (_) {
+      return fallback;
+    }
+  }
+}
+
+class _CollectionPanel extends StatelessWidget {
+  const _CollectionPanel({required this.data});
+
+  final CollectionData data;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: <Widget>[
+        _collectionGroup("姝﹀櫒", data.weapons),
+        _collectionGroup("闄烽槺", data.traps),
+        _collectionGroup("鎻掍欢", data.plugins),
+      ],
+    );
+  }
+
+  Widget _collectionGroup(String title, List<CollectionItem> items) {
+    return NzmPanelCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          NzmSectionTitle(
+            title,
+            trailing: Text("${nzmFormatNumber(items.length)} 个"),
+          ),
+          if (items.isEmpty) const Text("鏆傛棤鏁版嵁"),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: items.map((CollectionItem e) {
+              return _CollectionItemCard(item: e);
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CollectionItemCard extends StatelessWidget {
+  const _CollectionItemCard({required this.item});
+
+  final CollectionItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool hasImage = item.iconUrl.trim().isNotEmpty;
+    return Container(
+      width: 160,
+      height: 98,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: NzmTheme.line),
+        image: hasImage
+            ? DecorationImage(
+                image: NetworkImage(item.iconUrl),
+                fit: BoxFit.cover,
+                onError: (Object _, StackTrace? __) {},
+              )
+            : null,
+        gradient: hasImage
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: <Color>[Color(0xAA163049), Color(0xAA0E2133)],
+              ),
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          gradient: const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[Color(0x22000000), Color(0xCC020812)],
+          ),
+        ),
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: <Widget>[
+            Text(
+              item.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 14,
+                height: 1.2,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 2),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class HistoryTab extends StatefulWidget {
+  const HistoryTab({required this.controller, super.key});
+
+  final AppController controller;
+
+  @override
+  State<HistoryTab> createState() => _HistoryTabState();
+}
+
+class _HistoryTabState extends State<HistoryTab> {
+  final Set<String> _expanded = <String>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final AppController c = widget.controller;
+    return ListView(
+      children: <Widget>[
+        NzmPanelCard(
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: NzmFilterDropdown(
+                  label: "妯″紡",
+                  options: c.historyModeOptions,
+                  optionLabels: c.historyModeOptionLabels,
+                  value: c.historyModeFilter,
+                  onChanged: c.setHistoryModeFilter,
+                  width: double.infinity,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: NzmFilterDropdown(
+                  label: "闅惧害",
+                  options: c.historyDifficultyOptions,
+                  optionLabels: c.historyDifficultyOptionLabels,
+                  value: c.historyDifficultyFilter,
+                  onChanged: c.setHistoryDifficultyFilter,
+                  width: double.infinity,
+                ),
+              ),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 90),
+                child: _PagerInline(
+                  page: c.historyPage,
+                  totalPages: c.historyTotalPages,
+                  onPrev: c.previousHistoryPage,
+                  onNext: c.nextHistoryPage,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (c.isHistoryLoading) const LinearProgressIndicator(minHeight: 2),
+        ...c.pagedHistoryRecords.map((BattleRecord e) => _recordCard(c, e)),
+        if (c.pagedHistoryRecords.isEmpty)
+          NzmEmptyState(c.hasBoundAccount
+              ? (c.lastRefreshUnauthorized
+                  ? "历史战绩拉取失败：账号授权失效，请在账号页更新 token 后重试"
+                  : "鏆傛棤鍘嗗彶鎴樼哗")
+              : "璇峰厛缁戝畾璐﹀彿"),
+      ],
+    );
+  }
+
+  Widget _recordCard(AppController c, BattleRecord e) {
+    final String key = c.recordIdentityKey(e);
+    final bool open = _expanded.contains(key);
+    final String resultText = e.isWin ? "鑳滃埄" : "澶辫触";
+    final String durationText = _formatDuration(e.durationSeconds);
+    final String damageText = e.score > 0 ? _formatNumber(e.score) : "--";
+    final BattleRemark? remark = c.remarkForRecord(e);
+    return NzmPanelCard(
+      child: Column(
+        children: <Widget>[
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Row(
+              children: <Widget>[
+                Expanded(child: Text("$resultText | ${e.modeName}")),
+                const SizedBox(width: 8),
+                Text(
+                  damageText,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFFFF6B6B),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            subtitle: Text(
+              "${e.mapName} | ${e.difficultyName} | ${e.timeText} | $durationText",
+              style: const TextStyle(fontSize: 11),
+            ),
+            trailing: Icon(open ? Icons.expand_less : Icons.expand_more),
+            onTap: () {
+              setState(() {
+                if (open) {
+                  _expanded.remove(key);
+                } else {
+                  _expanded.add(key);
+                }
+              });
+              if (!open && e.roomId.trim().isNotEmpty) {
+                c.loadMatchDetail(e.roomId);
+              }
+            },
+          ),
+          if (remark != null && remark.text.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      "第 ${remark.modeNth > 0 ? remark.modeNth : 1} 次备注",
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: NzmTheme.muted,
+                      ),
+                    ),
+                    Text(
+                      "澶囨敞锛?{remark.text}",
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: NzmTheme.green,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (open) MatchDetailPanel(controller: c, roomId: e.roomId),
+        ],
+      ),
+    );
+  }
+
+  String _formatDuration(int seconds) {
+    final int value = seconds < 0 ? 0 : seconds;
+    final int m = value ~/ 60;
+    final int s = value % 60;
+    return "$m分${s.toString().padLeft(2, "0")}秒";
+  }
+
+  String _formatNumber(int value) {
+    final String raw = value.toString();
+    return raw.replaceAllMapped(
+      RegExp(r"\B(?=(\d{3})+(?!\d))"),
+      (Match _) => ",",
+    );
+  }
+}
+
+Future<void> _showRemarkEditorDialog({
+  required BuildContext context,
+  required AppController controller,
+  required BattleRecord record,
+}) async {
+  final BattleRemark? existing = controller.remarkForRecord(record);
+  final int autoNth = controller.suggestedModeNthForRecord(record);
+  final TextEditingController textController = TextEditingController(
+    text: existing?.text ?? "",
+  );
+  await showDialog<void>(
+    context: context,
+    builder: (BuildContext dialogContext) {
+      return AlertDialog(
+        title: const Text("缂栬緫澶囨敞"),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                "${record.modeName} | ${record.mapName}",
+                style: const TextStyle(fontSize: 12, color: NzmTheme.muted),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "系统自动计算该模式的第几次备注：第 $autoNth 次",
+                style: const TextStyle(fontSize: 12, color: NzmTheme.muted),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: textController,
+                maxLines: 1,
+                maxLength: 120,
+                inputFormatters: <TextInputFormatter>[
+                  FilteringTextInputFormatter.deny(RegExp(r"[\r\n\t]")),
+                ],
+                decoration: const InputDecoration(
+                  labelText: "备注内容（纯文本，不支持换行）",
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text("鍙栨秷"),
+          ),
+          TextButton(
+            onPressed: () async {
+              await controller.saveRemarkForRecord(
+                record: record,
+                text: "",
+              );
+              if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+            },
+            child: const Text("娓呯┖"),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await controller.saveRemarkForRecord(
+                record: record,
+                text: textController.text,
+              );
+              if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+            },
+            child: const Text("淇濆瓨"),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+class LocalTab extends StatefulWidget {
+  const LocalTab({required this.controller, super.key});
+
+  final AppController controller;
+
+  @override
+  State<LocalTab> createState() => _LocalTabState();
+}
+
+class _LocalTabState extends State<LocalTab> {
+  final Set<String> _expanded = <String>{};
+
+  @override
+  Widget build(BuildContext context) {
+    final AppController c = widget.controller;
+    final int filteredCount = c.localBattleFilteredCount;
+    final List<BattleRecord> pagedRecords = c.pagedLocalBattleRecords;
+    return ListView(
+      children: <Widget>[
+        NzmPanelCard(child: _LocalActionRow(controller: c)),
+        NzmPanelCard(
+          child: SegmentedButton<LocalSubTab>(
+            segments: const <ButtonSegment<LocalSubTab>>[
+              ButtonSegment<LocalSubTab>(
+                  value: LocalSubTab.stats, label: Text("鏈湴缁熻")),
+              ButtonSegment<LocalSubTab>(
+                  value: LocalSubTab.battle, label: Text("鏈湴鎴樼哗")),
+            ],
+            selected: <LocalSubTab>{c.localSubTab},
+            onSelectionChanged: (Set<LocalSubTab> selected) {
+              if (selected.isEmpty) return;
+              c.setLocalSubTab(selected.first);
+            },
+          ),
+        ),
+        if (c.localSubTab == LocalSubTab.stats)
+          _LocalStatsPanel(
+            data: c.localStatsData,
+            remarkCount: c.localRemarkCount,
+            statsMapStats: c.statsData.mapStats,
+          )
+        else ...<Widget>[
+          NzmPanelCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                    const double minItemWidth = 108;
+                    const double spacing = 6;
+                    final double maxWidth = constraints.maxWidth;
+                    if (maxWidth >= minItemWidth * 3 + spacing * 2) {
+                      final double itemWidth = (maxWidth - spacing * 2) / 3;
+                      return Row(
+                        children: <Widget>[
+                          SizedBox(
+                            width: itemWidth,
+                            child: NzmFilterDropdown(
+                              label: "妯″紡",
+                              options: c.localModeOptions,
+                              optionLabels: c.localModeOptionLabels,
+                              value: c.localModeFilter,
+                              onChanged: c.setLocalModeFilter,
+                              width: double.infinity,
+                            ),
+                          ),
+                          const SizedBox(width: spacing),
+                          SizedBox(
+                            width: itemWidth,
+                            child: NzmFilterDropdown(
+                              label: "闅惧害",
+                              options: c.localDifficultyOptions,
+                              optionLabels: c.localDifficultyOptionLabels,
+                              value: c.localDifficultyFilter,
+                              onChanged: c.setLocalDifficultyFilter,
+                              width: double.infinity,
+                            ),
+                          ),
+                          const SizedBox(width: spacing),
+                          SizedBox(
+                            width: itemWidth,
+                            child: NzmFilterDropdown(
+                              label: "鍦板浘",
+                              options: c.localMapOptions,
+                              optionLabels: c.localMapOptionLabels,
+                              value: c.localMapFilter,
+                              onChanged: c.setLocalMapFilter,
+                              width: double.infinity,
+                            ),
+                          ),
+                        ],
+                      );
+                    }
+                    final double minTotalWidth = minItemWidth * 3 + spacing * 2;
+                    return SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: SizedBox(
+                        width: minTotalWidth,
+                        child: Row(
+                          children: <Widget>[
+                            SizedBox(
+                              width: minItemWidth,
+                              child: NzmFilterDropdown(
+                                label: "妯″紡",
+                                options: c.localModeOptions,
+                                optionLabels: c.localModeOptionLabels,
+                                value: c.localModeFilter,
+                                onChanged: c.setLocalModeFilter,
+                                width: double.infinity,
+                              ),
+                            ),
+                            const SizedBox(width: spacing),
+                            SizedBox(
+                              width: minItemWidth,
+                              child: NzmFilterDropdown(
+                                label: "闅惧害",
+                                options: c.localDifficultyOptions,
+                                optionLabels: c.localDifficultyOptionLabels,
+                                value: c.localDifficultyFilter,
+                                onChanged: c.setLocalDifficultyFilter,
+                                width: double.infinity,
+                              ),
+                            ),
+                            const SizedBox(width: spacing),
+                            SizedBox(
+                              width: minItemWidth,
+                              child: NzmFilterDropdown(
+                                label: "鍦板浘",
+                                options: c.localMapOptions,
+                                optionLabels: c.localMapOptionLabels,
+                                value: c.localMapFilter,
+                                onChanged: c.setLocalMapFilter,
+                                width: double.infinity,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      flex: 5,
+                      child: NzmFilterDropdown(
+                        label: "澶囨敞",
+                        options: c.localRemarkOptions,
+                        optionLabels: c.localRemarkOptionLabels,
+                        value: c.localRemarkFilter,
+                        onChanged: c.setLocalRemarkFilter,
+                        width: double.infinity,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    _PagerInline(
+                      page: c.localBattlePage,
+                      totalPages: c.localBattleTotalPages,
+                      onPrev: c.previousLocalBattlePage,
+                      onNext: c.nextLocalBattlePage,
+                    ),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      flex: 4,
+                      child: Text(
+                        "共 ${nzmFormatNumber(filteredCount)} 条记录",
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(
+                            fontSize: 11, color: NzmTheme.muted),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          if (pagedRecords.isEmpty)
+            NzmEmptyState(c.hasBoundAccount ? "鏆傛棤鏈湴鎴樼哗" : "璇峰厛缁戝畾璐﹀彿"),
+          ...pagedRecords.map((BattleRecord e) => _localRecordCard(c, e)),
+        ],
+      ],
+    );
+  }
+
+  Widget _localRecordCard(AppController c, BattleRecord e) {
+    final String key = c.recordIdentityKey(e);
+    final bool open = _expanded.contains(key);
+    final bool hasDetail = e.roomId.trim().isNotEmpty;
+    final BattleRemark? remark = c.remarkForRecord(e);
+    final String resultText = e.isWin ? "鑳滃埄" : "澶辫触";
+    final String durationText = _formatDuration(e.durationSeconds);
+    final String scoreText = e.score > 0 ? _formatNumber(e.score) : "--";
+    return NzmPanelCard(
+      child: Column(
+        children: <Widget>[
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Row(
+              children: <Widget>[
+                Expanded(child: Text("$resultText | ${e.modeName}")),
+                const SizedBox(width: 8),
+                Text(
+                  scoreText,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFFFF6B6B),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            subtitle: Text(
+              "${e.mapName} | ${e.difficultyName} | ${e.timeText} | $durationText",
+              style: const TextStyle(fontSize: 11),
+            ),
+            trailing: hasDetail
+                ? Icon(open ? Icons.expand_less : Icons.expand_more)
+                : null,
+            onTap: hasDetail
+                ? () {
+                    setState(() {
+                      if (open) {
+                        _expanded.remove(key);
+                      } else {
+                        _expanded.add(key);
+                      }
+                    });
+                    if (!open) {
+                      c.loadMatchDetail(e.roomId);
+                    }
+                  }
+                : null,
+          ),
+          if (remark != null && remark.text.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      "第 ${remark.modeNth > 0 ? remark.modeNth : 1} 次备注",
+                      style:
+                          const TextStyle(fontSize: 11, color: NzmTheme.muted),
+                    ),
+                    Text(
+                      "澶囨敞锛?{remark.text}",
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          const TextStyle(fontSize: 12, color: NzmTheme.green),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                style: TextButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  minimumSize: const Size(0, 24),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: () => _showRemarkEditorDialog(
+                  context: context,
+                  controller: c,
+                  record: e,
+                ),
+                child: const Text("澶囨敞"),
+              ),
+            ),
+          ),
+          if (open && hasDetail)
+            MatchDetailPanel(controller: c, roomId: e.roomId),
+        ],
+      ),
+    );
+  }
+
+  String _formatDuration(int seconds) {
+    final int value = seconds < 0 ? 0 : seconds;
+    final int m = value ~/ 60;
+    final int s = value % 60;
+    return "$m分${s.toString().padLeft(2, "0")}秒";
+  }
+
+  String _formatNumber(int value) {
+    final String raw = value.toString();
+    return raw.replaceAllMapped(
+      RegExp(r"\B(?=(\d{3})+(?!\d))"),
+      (Match _) => ",",
+    );
+  }
+}
+
+class _PagerInline extends StatelessWidget {
+  const _PagerInline({
+    required this.page,
+    required this.totalPages,
+    required this.onPrev,
+    required this.onNext,
+  });
+
+  final int page;
+  final int totalPages;
+  final VoidCallback onPrev;
+  final VoidCallback onNext;
+
+  @override
+  Widget build(BuildContext context) {
+    final int safePage = page < 1 ? 1 : page;
+    final int safeTotal = totalPages < 1 ? 1 : totalPages;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 0),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: NzmTheme.line),
+        color: const Color(0x66132843),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 20, height: 20),
+            padding: EdgeInsets.zero,
+            onPressed: safePage > 1 ? onPrev : null,
+            icon: const Icon(Icons.chevron_left, size: 14),
+          ),
+          Text("第 $safePage / $safeTotal 页",
+              style: const TextStyle(fontSize: 9)),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 20, height: 20),
+            padding: EdgeInsets.zero,
+            onPressed: safePage < safeTotal ? onNext : null,
+            icon: const Icon(Icons.chevron_right, size: 14),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LocalActionRow extends StatelessWidget {
+  const _LocalActionRow({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final ButtonStyle style = FilledButton.styleFrom(
+      minimumSize: const Size(0, 32),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      visualDensity: VisualDensity.compact,
+      textStyle: const TextStyle(fontSize: 10, height: 1),
+    );
+    return Row(
+      children: <Widget>[
+        Expanded(
+          child: FilledButton.tonalIcon(
+            style: style,
+            onPressed:
+                controller.hasBoundAccount ? controller.importLocalJson : null,
+            icon: const Icon(Icons.file_open, size: 14),
+            label: const Text(
+              "瀵煎叆JSON",
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.fade,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: FilledButton.tonalIcon(
+            style: style,
+            onPressed:
+                controller.hasBoundAccount ? controller.exportLocalJson : null,
+            icon: const Icon(Icons.file_download, size: 14),
+            label: const Text(
+              "瀵煎嚭JSON",
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.fade,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: FilledButton.tonalIcon(
+            style: style,
+            onPressed: controller.hasBoundAccount
+                ? controller.syncLocalStatsToCloud
+                : null,
+            icon: const Icon(Icons.cloud_upload, size: 14),
+            label: const Text(
+              "推送云端",
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.fade,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: FilledButton.tonalIcon(
+            style: style,
+            onPressed: controller.hasBoundAccount
+                ? controller.pullLocalStatsFromCloud
+                : null,
+            icon: const Icon(Icons.cloud_download, size: 14),
+            label: const Text(
+              "鎷夊彇浜戠",
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.fade,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LocalStatsPanel extends StatelessWidget {
+  const _LocalStatsPanel({
+    required this.data,
+    required this.remarkCount,
+    required this.statsMapStats,
+  });
+
+  final LocalStatsData data;
+  final int remarkCount;
+  final List<MapStatsEntry> statsMapStats;
+
+  @override
+  Widget build(BuildContext context) {
+    final int officialCount = (data.totalRecords - data.manualRows) < 0
+        ? 0
+        : (data.totalRecords - data.manualRows);
+    final Map<String, String> iconByMapName = <String, String>{};
+    for (final MapStatsEntry entry in statsMapStats) {
+      final String key = entry.mapName.trim();
+      final String icon = entry.iconUrl.trim();
+      if (key.isEmpty || icon.isEmpty) continue;
+      iconByMapName.putIfAbsent(key, () => icon);
+    }
+    return Column(
+      children: <Widget>[
+        NzmPanelCard(
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              NzmMetricCard(
+                  label: "鏈湴璁板綍鍦烘暟",
+                  value: nzmFormatNumber(data.totalRecords)),
+              NzmMetricCard(
+                  label: "瀵煎叆鍦烘暟", value: nzmFormatNumber(data.manualRows)),
+              NzmMetricCard(
+                  label: "瀹樻柟鍚屾鍦烘暟", value: nzmFormatNumber(officialCount)),
+              NzmMetricCard(
+                  label: "澶囨敞鏉℃暟", value: nzmFormatNumber(remarkCount)),
+            ],
+          ),
+        ),
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("杩戞湡鍦板浘璇︽儏"),
+              if (data.mapStats.isEmpty) const Text("鏆傛棤鏁版嵁"),
+              if (data.mapStats.isNotEmpty)
+                LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                    final double cardWidth = _localMapCardWidth(
+                      constraints.maxWidth,
+                    );
+                    return Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: data.mapStats.take(12).map((MapStatsEntry e) {
+                        return SizedBox(
+                          width: cardWidth,
+                          child: _buildLocalMapCard(
+                            e,
+                            fallbackIconByMapName: iconByMapName,
+                          ),
+                        );
+                      }).toList(),
+                    );
+                  },
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  double _localMapCardWidth(double maxWidth, {double spacing = 10}) {
+    final double width = (maxWidth - spacing) / 2;
+    if (width < 140) {
+      return maxWidth;
+    }
+    return width;
+  }
+
+  Widget _buildLocalMapCard(
+    MapStatsEntry e, {
+    required Map<String, String> fallbackIconByMapName,
+  }) {
+    final String iconUrl = e.iconUrl.trim().isNotEmpty
+        ? e.iconUrl.trim()
+        : (fallbackIconByMapName[e.mapName.trim()] ?? "");
+    final bool hasBg = iconUrl.isNotEmpty;
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: NzmTheme.line),
+        image: hasBg
+            ? DecorationImage(
+                image: NetworkImage(iconUrl),
+                fit: BoxFit.cover,
+                onError: (Object _, StackTrace? __) {},
+              )
+            : null,
+        color: hasBg ? null : const Color(0xAA132843),
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          gradient: const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[Color(0x22000000), Color(0xCC020812)],
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              e.mapName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              "${nzmFormatNumber(e.games)} 鍦?- ${e.winRate.toStringAsFixed(1)}% 鑳滅巼",
+              style: const TextStyle(fontSize: 12),
+            ),
+            ...e.difficulties.take(3).map((MapDifficultyEntry d) {
+              return Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Text(
+                  "${d.diffName}锛?{nzmFormatNumber(d.games)} 鍦?(${d.winRate.toStringAsFixed(1)}%)",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: NzmTheme.muted),
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ProfileTab extends StatefulWidget {
+  const ProfileTab({required this.controller, super.key});
+
+  final AppController controller;
+
+  @override
+  State<ProfileTab> createState() => _ProfileTabState();
+}
+
+class _ProfileTabState extends State<ProfileTab> {
+  final TextEditingController _openid = TextEditingController();
+  final TextEditingController _token = TextEditingController();
+
+  @override
+  void dispose() {
+    _openid.dispose();
+    _token.dispose();
+    super.dispose();
+  }
+
+  Future<bool> _confirm({
+    required String title,
+    required String message,
+    required String okText,
+  }) async {
+    final bool? result = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text("鍙栨秷"),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(okText),
+            ),
+          ],
+        );
+      },
+    );
+    return result == true;
+  }
+
+  Future<void> _confirmClearImported(AppController c) async {
+    final AccountBinding? account = c.activeAccount;
+    if (account == null) return;
+    final bool ok = await _confirm(
+      title: "娓呴櫎瀵煎叆鏁版嵁",
+      message: "将删除当前账号 ${account.displayName} 的所有导入数据，是否继续？",
+      okText: "纭鍒犻櫎",
+    );
+    if (!ok) return;
+    await c.clearImportedLocalDataForActive();
+  }
+
+  Future<void> _confirmClearAll(AppController c) async {
+    final AccountBinding? account = c.activeAccount;
+    if (account == null) return;
+    final bool ok = await _confirm(
+      title: "娓呴櫎鍏ㄩ儴鏁版嵁",
+      message:
+          "灏嗗垹闄ゅ綋鍓嶈处鍙?${account.displayName} 鐨勫叏閮ㄦ湰鍦版暟鎹€佸娉ㄥ拰缁熻缂撳瓨锛屾槸鍚︾户缁紵",
+      okText: "鍏ㄩ儴鍒犻櫎",
+    );
+    if (!ok) return;
+    await c.clearAllLocalDataForActive();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppController c = widget.controller;
+    final AccountBinding? active = c.activeAccount;
+    final String activeUin = active?.uin.trim() ?? "";
+    final bool hasHistoryData =
+        c.historyTotalCount > 0 || c.historyRecords.isNotEmpty;
+    String activeName = active?.nickname.trim() ?? "";
+    if (activeName.isEmpty || activeName == activeUin) {
+      activeName = hasHistoryData ? "鏈煡鐜╁" : activeUin;
+    }
+
+    return ListView(
+      children: <Widget>[
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("璐﹀彿缁戝畾"),
+              TextField(
+                controller: _openid,
+                decoration: const InputDecoration(labelText: "openid"),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _token,
+                decoration: const InputDecoration(labelText: "access_token"),
+              ),
+              const SizedBox(height: 8),
+              FilledButton(
+                onPressed: () => c.bindOrUpdateAccount(
+                  openid: _openid.text,
+                  accessToken: _token.text,
+                ),
+                child: const Text("缁戝畾/鏇存柊璐﹀彿"),
+              ),
+            ],
+          ),
+        ),
+        NzmPanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const NzmSectionTitle("褰撳墠璐﹀彿"),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  '当前账号：${activeName.isEmpty ? "未设置" : activeName}',
+                  style: const TextStyle(fontSize: 13, color: NzmTheme.muted),
+                ),
+              ),
+              if (c.accounts.isEmpty) const Text("鏆傛棤璐﹀彿"),
+              ...c.accounts.map((AccountBinding a) {
+                final bool isActive = a.uin == c.activeUin;
+                String itemName = a.nickname.trim();
+                if (itemName.isEmpty || itemName == a.uin.trim()) {
+                  itemName =
+                      (isActive && hasHistoryData) ? "鏈煡鐜╁" : a.uin.trim();
+                }
+                return Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: NzmTheme.line),
+                    color: const Color(0x66132843),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        itemName,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: <Widget>[
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                minimumSize: const Size(0, 28),
+                                textStyle: const TextStyle(fontSize: 11),
+                              ),
+                              onPressed: isActive
+                                  ? null
+                                  : () => c.switchActiveAccount(a.uin),
+                              child: Text(isActive ? "已启用" : "切换"),
+                            ),
+                            const SizedBox(width: 6),
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                minimumSize: const Size(0, 28),
+                                textStyle: const TextStyle(fontSize: 11),
+                              ),
+                              onPressed: () => c.removeAccount(a.uin),
+                              child: const Text("鍒犻櫎"),
+                            ),
+                            if (isActive) ...<Widget>[
+                              const SizedBox(width: 6),
+                              FilledButton.tonal(
+                                style: FilledButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  minimumSize: const Size(0, 28),
+                                  textStyle: const TextStyle(fontSize: 11),
+                                ),
+                                onPressed: () => _confirmClearImported(c),
+                                child: const Text("娓呴櫎瀵煎叆"),
+                              ),
+                              const SizedBox(width: 6),
+                              FilledButton.tonal(
+                                style: FilledButton.styleFrom(
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  minimumSize: const Size(0, 28),
+                                  textStyle: const TextStyle(fontSize: 11),
+                                ),
+                                onPressed: () => _confirmClearAll(c),
+                                child: const Text("娓呴櫎鍏ㄩ儴"),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+        NzmPanelCard(
+          child: Row(
+            children: <Widget>[
+              const Expanded(child: Text("七牛云配置")),
+              FilledButton.tonal(
+                onPressed: () {
+                  showDialog<void>(
+                    context: context,
+                    builder: (BuildContext dialogContext) {
+                      return QiniuConfigDialog(controller: c);
+                    },
+                  );
+                },
+                child: const Text("缂栬緫"),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class LogTab extends StatelessWidget {
+  const LogTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final ApiLogService logs = ApiLogService.instance;
+    return AnimatedBuilder(
+      animation: logs,
+      builder: (BuildContext context, _) {
+        final List<ApiLogEntry> entries = logs.entries;
+        if (entries.isEmpty) {
+          return const NzmEmptyState("鏆傛棤 API 鏃ュ織");
+        }
+        return ListView(
+          children: <Widget>[
+            NzmPanelCard(
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                      child: Text(
+                          "API 鏃ュ織鏁伴噺锛?{nzmFormatNumber(entries.length)}")),
+                  TextButton(onPressed: logs.clear, child: const Text("娓呯┖")),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class QiniuConfigDialog extends StatefulWidget {
+  const QiniuConfigDialog({required this.controller, super.key});
+
+  final AppController controller;
+
+  @override
+  State<QiniuConfigDialog> createState() => _QiniuConfigDialogState();
+}
+
+class _QiniuConfigDialogState extends State<QiniuConfigDialog> {
+  late final TextEditingController _accessKey;
+  late final TextEditingController _secretKey;
+  late final TextEditingController _domain;
+  late final TextEditingController _bucket;
+  late final TextEditingController _path;
+  late String _protocol;
+
+  @override
+  void initState() {
+    super.initState();
+    final QiniuConfig q = widget.controller.qiniuConfig;
+    _accessKey = TextEditingController(text: q.accessKey);
+    _secretKey = TextEditingController(text: q.secretKey);
+    _domain = TextEditingController(text: q.domain);
+    _bucket = TextEditingController(text: q.bucket);
+    _path = TextEditingController(text: q.path);
+    _protocol = q.protocol.trim().toLowerCase() == "http" ? "http" : "https";
+  }
+
+  @override
+  void dispose() {
+    _accessKey.dispose();
+    _secretKey.dispose();
+    _domain.dispose();
+    _bucket.dispose();
+    _path.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text("七牛云配置"),
+      content: SizedBox(
+        width: 520,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text(
+                "填写后可将本地统计上传到云端，并支持从云端拉取。",
+                style: TextStyle(fontSize: 12, color: NzmTheme.muted),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _accessKey,
+                decoration: const InputDecoration(
+                  labelText: "AccessKey",
+                  hintText: "渚嬪锛氫綘鐨?AccessKey",
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _secretKey,
+                decoration: const InputDecoration(
+                  labelText: "SecretKey",
+                  hintText: "渚嬪锛氫綘鐨?SecretKey",
+                ),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _protocol,
+                decoration: const InputDecoration(labelText: "鍗忚"),
+                items: const <DropdownMenuItem<String>>[
+                  DropdownMenuItem<String>(
+                      value: "https", child: Text("https")),
+                  DropdownMenuItem<String>(value: "http", child: Text("http")),
+                ],
+                onChanged: (String? value) {
+                  if (value == null) return;
+                  setState(() {
+                    _protocol = value;
+                  });
+                },
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _domain,
+                decoration: const InputDecoration(
+                  labelText: "鍩熷悕",
+                  hintText: "渚嬪锛歝dn.example.com",
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _bucket,
+                decoration: const InputDecoration(
+                  labelText: "瀛樺偍绌洪棿鍚嶇О",
+                  hintText: "渚嬪锛歜ucket 鍚嶇О",
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _path,
+                decoration: const InputDecoration(
+                  labelText: "淇濆瓨璺緞",
+                  hintText: "渚嬪锛歯zm/local-stats",
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text("鍙栨秷"),
+        ),
+        FilledButton(
+          onPressed: () async {
+            final NavigatorState navigator = Navigator.of(context);
+            await widget.controller.saveQiniuConfig(
+              QiniuConfig(
+                accessKey: _accessKey.text.trim(),
+                secretKey: _secretKey.text.trim(),
+                protocol: _protocol,
+                domain: _domain.text.trim(),
+                path: _path.text.trim(),
+                bucket: _bucket.text.trim(),
+                updatedAt: DateTime.now().millisecondsSinceEpoch,
+              ),
+            );
+            if (!mounted) return;
+            navigator.pop();
+          },
+          child: const Text("淇濆瓨閰嶇疆"),
+        ),
+      ],
+    );
+  }
+}
+
+class MatchDetailPanel extends StatelessWidget {
+  const MatchDetailPanel(
+      {required this.controller, required this.roomId, super.key});
+
+  final AppController controller;
+  final String roomId;
+
+  @override
+  Widget build(BuildContext context) {
+    if (controller.isDetailLoading(roomId)) {
+      return const LinearProgressIndicator(minHeight: 2);
+    }
+    final String? err = controller.detailErrorByRoomId(roomId);
+    if (err != null && err.isNotEmpty) {
+      return Text("璇︽儏鍔犺浇澶辫触锛?err");
+    }
+    final MatchDetailData? detail = controller.detailByRoomId(roomId);
+    if (detail == null || detail.players.isEmpty) {
+      return const Text("鏆傛棤璇︽儏鏁版嵁");
+    }
+    final MatchPlayerDetail primary = _pickPrimary(detail.players);
+    final List<MatchPlayerDetail> orderedPlayers =
+        List<MatchPlayerDetail>.from(detail.players)
+          ..sort((MatchPlayerDetail a, MatchPlayerDetail b) {
+            if (a.isSelf == b.isSelf) return 0;
+            return a.isSelf ? -1 : 1;
+          });
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _partitionRow(primary.partitionDetails),
+        const SizedBox(height: 8),
+        ...orderedPlayers.map((MatchPlayerDetail player) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xAA132843),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: player.isSelf ? NzmTheme.green : NzmTheme.line),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    "${player.nickname}${player.isSelf ? " (浣?" : ""}",
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 12),
+                  ),
+                  const SizedBox(height: 6),
+                  _huntingMetrics(player),
+                  const SizedBox(height: 6),
+                  _equipmentSection(player.equipments),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  MatchPlayerDetail _pickPrimary(List<MatchPlayerDetail> players) {
+    for (final MatchPlayerDetail p in players) {
+      if (p.isSelf) return p;
+    }
+    for (final MatchPlayerDetail p in players) {
+      if (p.partitionDetails.isNotEmpty) return p;
+    }
+    for (final MatchPlayerDetail p in players) {
+      if (p.equipments.isNotEmpty) return p;
+    }
+    final List<MatchPlayerDetail> sorted = List<MatchPlayerDetail>.from(players)
+      ..sort((MatchPlayerDetail a, MatchPlayerDetail b) =>
+          b.bossDamage.compareTo(a.bossDamage));
+    return sorted.first;
+  }
+
+  Widget _huntingMetrics(MatchPlayerDetail detail) {
+    Widget metric(String label, int value) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xAA132843),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: NzmTheme.line),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(label,
+                style: const TextStyle(fontSize: 9, color: NzmTheme.muted)),
+            const SizedBox(height: 1),
+            Text(
+              _formatNumber(value),
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      );
+    }
+
+    Widget gap() => const SizedBox(width: 6);
+
+    return Column(
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Expanded(child: metric("绉垎", detail.score)),
+            gap(),
+            Expanded(child: metric("鍑绘潃", detail.kills)),
+            gap(),
+            Expanded(child: metric("姝讳骸", detail.deaths)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: <Widget>[
+            Expanded(child: metric("Boss浼ゅ", detail.bossDamage)),
+            gap(),
+            Expanded(child: metric("小怪伤害", detail.mobsDamage)),
+            gap(),
+            Expanded(child: metric("閲戝竵", detail.totalCoin)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _partitionRow(List<MatchPartitionDetail> list) {
+    if (list.isEmpty) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xAA132843),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: NzmTheme.line),
+        ),
+        child: const Text("鏆傛棤鍖哄煙鐢ㄦ椂鏁版嵁"),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        const Text("鍖哄煙鐢ㄦ椂",
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+        const SizedBox(height: 6),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: list.map((MatchPartitionDetail e) {
+              return Container(
+                width: 122,
+                margin: const EdgeInsets.only(right: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xAA132843),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: NzmTheme.line),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      e.areaName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: NzmTheme.green,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _formatDuration(e.usedTime),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _equipmentSection(List<MatchEquipment> equipments) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        const Text("鏈眬瑁呴厤",
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+        const SizedBox(height: 6),
+        if (equipments.isEmpty)
+          const Text("鏆傛棤瑁呴厤鏁版嵁", style: TextStyle(fontSize: 11))
+        else
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: equipments.map((MatchEquipment e) {
+                return Container(
+                  width: 170,
+                  margin: const EdgeInsets.only(right: 8),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xAA132843),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: NzmTheme.line),
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      if (e.iconUrl.trim().isNotEmpty)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: Image.network(
+                            e.iconUrl,
+                            width: 24,
+                            height: 24,
+                            fit: BoxFit.cover,
+                            errorBuilder: (
+                              BuildContext _,
+                              Object __,
+                              StackTrace? ___,
+                            ) =>
+                                const SizedBox(width: 24, height: 24),
+                          ),
+                        ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              e.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700, fontSize: 11),
+                            ),
+                            Text(
+                              e.commonItems.isEmpty
+                                  ? "无词条"
+                                  : e.commonItems
+                                      .map((MatchCommonItem i) => i.name)
+                                      .join("/"),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 9, color: NzmTheme.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _formatDuration(int seconds) {
+    final int value = seconds < 0 ? 0 : seconds;
+    final int m = value ~/ 60;
+    final int s = value % 60;
+    return "$m分${s.toString().padLeft(2, "0")}秒";
+  }
+
+  String _formatNumber(int value) {
+    final String raw = value.toString();
+    return raw.replaceAllMapped(
+      RegExp(r"\B(?=(\d{3})+(?!\d))"),
+      (Match _) => ",",
+    );
+  }
+}
