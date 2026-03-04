@@ -1,8 +1,8 @@
 # NZM 数据统计 (Flutter)
 
-Flutter 版 NZM 数据统计客户端，功能对齐 Electron 端，面向移动端使用场景。
+Flutter 版 NZM 数据统计客户端，功能对齐 [Electron](https://github.com/scripted-C20/nzmLocalData) 端，面向移动端使用场景。
 
-## 功能概览
+## 功能概览（2026-03-03）
 
 - 底部主导航：
   - 数据统计
@@ -27,13 +27,13 @@ Flutter 版 NZM 数据统计客户端，功能对齐 Electron 端，面向移动
 
 ### 获取token工具下载
 
-- OneDrive：[点我下载]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I>
-- 移动云盘：[点我下载]<https://yun.139.com/shareweb/#/w/i/2sUfJiUmha9p0>
+- OneDrive：[点我下载](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I)
+- 移动云盘：[点我下载](https://yun.139.com/shareweb/#/w/i/2sUfJiUmha9p0)
 
 ### 工具apk 下载
 
-- OneDrive：[点我下载]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQCzPovXzxd7RbBLLTTmBHdsARE8mHuqIZ_-YwNCjPl1JPA?e=noZxHe>
-- 移动云盘：[点我下载]<https://yun.139.com/shareweb/#/w/i/2tyao86BR1Sjq>
+- OneDrive：[点我下载](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQCzPovXzxd7RbBLLTTmBHdsARE8mHuqIZ_-YwNCjPl1JPA?e=noZxHe)
+- 移动云盘：[点我下载](https://yun.139.com/shareweb/#/w/i/2tyao86BR1Sjq)
 
 ## 环境要求
 
